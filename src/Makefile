@@ -71,10 +71,34 @@ $(LIB): $(OBJS)
 	$(CC) -o $@ $(LIBFLAGS) $(OBJS)
 
 static: $(SLIB)
-$(SLIB): $(STATIC_OBJS)
+$(SLIB): libhadoofus.o
 	ar rcs $@ $^
 
 all: shared static
+
+# In order to not export internal extern functions in libhadoofus.a, we
+# partially link all of our objects into one object file, then we localize all
+# of its defined symbols that do not begin with "hdfs". Note that MacOS does
+# not have objcopy (at least by default), but its linker has additional options
+# that allow symbols to be localized. Additionally, MacOS mangles symbol names
+# by adding a leading underscore (which may be a sign that this is a bad idea).
+# XXX This does not work on MacOS: the initial `ld -r ` to create
+# libhadoofus_glob.o results in all symbols being marked local. Explicitly
+# trying to export symbols in this set also fails as they have already been
+# marked hidden by the compiler.
+libhadoofus.o: libhadoofus_glob.o
+ifeq ($(shell uname -s), Darwin)
+	UNEXPORT_ARG=`nm -gP libhadoofus_glob.o \
+	| awk '$$2 != "U" && $$1 !~ /^_hdfs/ { printf " -unexport_symbol %s",$$1 }'` \
+	&& ld -r $$UNEXPORT_ARG -o $@ libhadoofus_glob.o
+else
+	UNEXPORT_ARG=`nm -gP libhadoofus_glob.o \
+	| awk '$$2 != "U" && $$1 !~ /^hdfs/ { printf " -L %s",$$1 }'` \
+	&& objcopy $$UNEXPORT_ARG libhadoofus_glob.o $@
+endif
+
+libhadoofus_glob.o: $(STATIC_OBJS)
+	ld -r -o libhadoofus_glob.o $^
 
 %.pb-c.c %.pb-c.h: proto/%.proto
 	( cd proto && protoc-c --c_out=.. $(subst proto/,,$<) )
